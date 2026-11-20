@@ -1,7 +1,7 @@
 // Service Worker: hält die App-Dateien offline bereit.
 // Daten von Supabase werden NIE zwischengespeichert.
 // Bei jeder neuen Version VERSION erhöhen.
-const VERSION = 'wish-0.3.1';
+const VERSION = 'wish-0.4.0';
 const ASSETS = [
   './',
   './index.html',
@@ -12,6 +12,9 @@ const ASSETS = [
   './js/config.js',
   './js/crypto.js',
   './js/ui.js',
+  './js/data.js',
+  './js/forms.js',
+  './js/views.js',
   './icons/icon-180.png',
   './icons/icon-192.png',
   './icons/icon-512.png',

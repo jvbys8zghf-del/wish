@@ -1,19 +1,13 @@
-import { CONFIG } from './config.js';
 import * as api from './api.js';
 import * as vault from './crypto.js';
-import { h, icon, toast, openSheet, avatar, busy } from './ui.js';
+import { state, loadAll } from './data.js';
+import { showMain, errorText, spinnerView, brand, codeBlock, setRoute } from './views.js';
+import { h, icon, toast, openSheet, busy } from './ui.js';
 
 const root = document.getElementById('app');
 const RECOVERY_PENDING = 'wish.recoveryPending';
 const BROWSER_OK = 'wish.browserOk';
 
-const state = {
-  members: [],
-  me: null,
-  persons: [],
-  occasions: [],
-  tab: 'soon'
-};
 
 // ---------------------------------------------------------------- Start
 
@@ -54,37 +48,16 @@ async function route() {
 
     const key = await vault.loadKey(state.me.user_id);
     if (!key) return showUnlock(km);
+    state.key = key;
 
-    await loadHousehold();
+    await loadAll();
     return showMain();
   } catch (err) {
     return showError(err);
   }
 }
 
-async function loadHousehold() {
-  const [persons, occasions] = await Promise.all([
-    api.select('persons', 'select=id,name,emoji,color,birth_month,birth_day,birth_year,member_id,archived&archived=eq.false&order=name.asc'),
-    api.select('occasions', 'select=id,person_id,title,kind,month,day,year,recurring')
-  ]);
-  state.persons = persons;
-  state.occasions = occasions;
-}
-
 // ---------------------------------------------------------------- Fehler
-
-function errorText(err) {
-  const msg = String(err && err.message || err || '');
-  if (err && err.code === 'offline') return 'Keine Verbindung. Bitte Internet prüfen und erneut versuchen.';
-  if (/anonymous sign-ins are disabled/i.test(msg)) {
-    return 'Anonyme Anmeldung ist im Supabase-Projekt ausgeschaltet. Unter Authentication → Sign In / Providers „Allow anonymous sign-ins“ einschalten.';
-  }
-  if (/signups not allowed/i.test(msg)) {
-    return 'Registrierung ist im Supabase-Projekt ausgeschaltet. Unter Authentication → Sign In / Providers „Allow new users to sign up“ einschalten.';
-  }
-  if (/rate limit/i.test(msg)) return 'Zu viele Anmeldungen in kurzer Zeit. Bitte in einer Stunde erneut versuchen.';
-  return msg || 'Unbekannter Fehler.';
-}
 
 function showError(err) {
   if (err && err.code === 'session_lost') {
@@ -99,12 +72,6 @@ function showError(err) {
       retry
     )
   ));
-}
-
-function spinnerView() {
-  return h('div', { class: 'boot', role: 'status' },
-    h('span', { class: 'spinner', 'aria-hidden': 'true' }),
-    h('span', { class: 'visually-hidden', text: 'Lädt' }));
 }
 
 // ---------------------------------------------------------------- Installation
@@ -126,12 +93,6 @@ function showInstall() {
       onclick: () => { localStorage.setItem(BROWSER_OK, '1'); render(spinnerView()); route(); }
     }, 'Trotzdem im Browser testen')
   ));
-}
-
-function brand() {
-  return h('div', { class: 'brand' },
-    h('img', { src: './icons/icon-192.png', alt: '', width: 72, height: 72, class: 'brand-icon' }),
-    h('span', { class: 'brand-name', text: 'Wish' }));
 }
 
 // ---------------------------------------------------------------- Beitritt
@@ -252,21 +213,6 @@ function showRecover() {
 
 // ---------------------------------------------------------------- Wiederherstellungscode
 
-function codeBlock(code) {
-  const copy = h('button', { class: 'btn btn-secondary', type: 'button' }, icon('copy', 18), 'Kopieren');
-  copy.addEventListener('click', async () => {
-    try {
-      await navigator.clipboard.writeText(code);
-      toast('Code kopiert. Jetzt in der Passwörter-App sichern.');
-    } catch (e) {
-      toast('Kopieren nicht möglich. Bitte abschreiben.');
-    }
-  });
-  return h('div', { class: 'stack' },
-    h('div', { class: 'code-display', 'aria-label': 'Wiederherstellungscode ' + code.split('').join(' ') }, code),
-    copy);
-}
-
 function showRecoveryCode(code, fresh) {
   const ack = h('input', { type: 'checkbox', id: 'ack' });
   const next = h('button', { class: 'btn btn-primary', type: 'button', disabled: true }, 'Weiter');
@@ -384,249 +330,6 @@ function showUnlock(km) {
   pw.focus();
 }
 
-// ---------------------------------------------------------------- Termine
-
-function startOfToday() {
-  const d = new Date();
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
-}
-
-function easterSunday(year) {
-  const a = year % 19;
-  const b = Math.floor(year / 100);
-  const c = year % 100;
-  const d = Math.floor(b / 4);
-  const e = b % 4;
-  const f = Math.floor((b + 8) / 25);
-  const g = Math.floor((b - f + 1) / 3);
-  const hh = (19 * a + b - d - g + 15) % 30;
-  const i = Math.floor(c / 4);
-  const k = c % 4;
-  const l = (32 + 2 * e + 2 * i - hh - k) % 7;
-  const m = Math.floor((a + 11 * hh + 22 * l) / 451);
-  const month = Math.floor((hh + l - 7 * m + 114) / 31);
-  const day = ((hh + l - 7 * m + 114) % 31) + 1;
-  return new Date(year, month - 1, day);
-}
-
-function dateIn(year, month, day) {
-  const last = new Date(year, month, 0).getDate();
-  return new Date(year, month - 1, Math.min(day, last));
-}
-
-function nextYearly(month, day, today) {
-  const y = today.getFullYear();
-  const d = dateIn(y, month, day);
-  return d >= today ? d : dateIn(y + 1, month, day);
-}
-
-function daysUntil(date, today) {
-  return Math.round((date - today) / 86400000);
-}
-
-const fmtDate = new Intl.DateTimeFormat('de-DE', { weekday: 'short', day: 'numeric', month: 'short' });
-const fmtToday = new Intl.DateTimeFormat('de-DE', { weekday: 'long', day: 'numeric', month: 'long' });
-
-function upcoming() {
-  const today = startOfToday();
-  const byId = new Map(state.persons.map((p) => [p.id, p]));
-  const items = [];
-
-  for (const o of state.occasions) {
-    let date = null;
-    if (o.kind === 'easter') {
-      date = easterSunday(today.getFullYear());
-      if (date < today) date = easterSunday(today.getFullYear() + 1);
-    } else if (o.recurring) {
-      date = nextYearly(o.month, o.day, today);
-    } else if (o.year) {
-      date = dateIn(o.year, o.month, o.day);
-      if (date < today) date = null;
-    }
-    if (!date) continue;
-    const person = o.person_id ? byId.get(o.person_id) : null;
-    if (o.person_id && !person) continue;
-    items.push({
-      key: 'o:' + o.id,
-      title: person ? person.name + ' · ' + o.title : o.title,
-      person,
-      kind: o.kind === 'easter' ? 'easter' : (o.title === 'Weihnachten' && !person ? 'christmas' : 'custom'),
-      date
-    });
-  }
-
-  for (const p of state.persons) {
-    if (!p.birth_month || !p.birth_day) continue;
-    const date = nextYearly(p.birth_month, p.birth_day, today);
-    const age = p.birth_year ? date.getFullYear() - p.birth_year : null;
-    items.push({ key: 'b:' + p.id, title: p.name + ' · Geburtstag', person: p, kind: 'birthday', date, age });
-  }
-
-  return items
-    .map((it) => Object.assign(it, { days: daysUntil(it.date, today) }))
-    .filter((it) => it.days <= 400)
-    .sort((a, b) => a.days - b.days);
-}
-
-// ---------------------------------------------------------------- Hauptansicht
-
-const TABS = [
-  { id: 'soon', label: 'Bald', icon: 'calendar' },
-  { id: 'people', label: 'Personen', icon: 'people' },
-  { id: 'bought', label: 'Gekauft', icon: 'bag' },
-  { id: 'wishes', label: 'Wünsche', icon: 'heart' }
-];
-
-function showMain() {
-  const content = h('div', { class: 'tab-content' });
-  const nav = h('nav', { class: 'tabbar', 'aria-label': 'Bereiche' },
-    TABS.map((t) => {
-      const b = h('button', {
-        type: 'button', class: 'tab', 'aria-current': state.tab === t.id ? 'page' : null,
-        onclick: () => { state.tab = t.id; showMain(); }
-      }, icon(t.icon, 24), h('span', { text: t.label }));
-      return b;
-    }));
-
-  if (state.tab === 'soon') content.append(viewSoon());
-  else if (state.tab === 'people') content.append(viewPeople());
-  else if (state.tab === 'bought') content.append(viewBought());
-  else content.append(viewWishes());
-
-  render(h('div', { class: 'app-shell' }, content, nav));
-}
-
-function header(title, sub) {
-  return h('header', { class: 'page-head' },
-    h('div', null,
-      sub ? h('span', { class: 'eyebrow', text: sub }) : null,
-      h('h1', { class: 'title-l', text: title })),
-    h('button', { class: 'icon-btn round', type: 'button', 'aria-label': 'Einstellungen', onclick: showSettings }, icon('person', 20)));
-}
-
-function partnerMissingCard() {
-  if (state.members.length >= 2) return null;
-  return h('div', { class: 'card note' }, icon('people', 20),
-    h('span', { text: 'Noch allein im Haushalt. Dein Partner installiert Wish und gibt denselben Haushaltscode ein.' }));
-}
-
-function viewSoon() {
-  const today = startOfToday();
-  const list = upcoming();
-  return h('div', { class: 'page' },
-    header('Bald', fmtToday.format(today)),
-    partnerMissingCard(),
-    h('h2', { class: 'section-title', text: 'Nächste Anlässe' }),
-    h('ul', { class: 'cards' }, list.map((it) => h('li', { class: 'card occasion' },
-      it.person ? avatar(it.person.name, it.person.color)
-        : h('span', { class: 'occ-icon occ-' + it.kind, 'aria-hidden': 'true' }, icon(it.kind === 'easter' ? 'egg' : it.kind === 'christmas' ? 'tree' : 'star')),
-      h('div', { class: 'occ-text' },
-        h('span', { class: 'occ-title', text: it.title }),
-        h('span', { class: 'occ-sub', text: fmtDate.format(it.date) + (it.age ? ' · wird ' + it.age : '') })),
-      h('div', { class: 'occ-days', 'aria-label': it.days === 0 ? 'heute' : 'in ' + it.days + ' Tagen' },
-        h('span', { class: 'occ-num', text: it.days === 0 ? 'Heute' : String(it.days) }),
-        it.days === 0 ? null : h('span', { class: 'occ-unit', text: it.days === 1 ? 'Tag' : 'Tage' }))
-    )))
-  );
-}
-
-function viewPeople() {
-  const sorted = state.persons.slice().sort((a, b) => {
-    const am = a.member_id ? 0 : 1;
-    const bm = b.member_id ? 0 : 1;
-    return am - bm || a.name.localeCompare(b.name, 'de');
-  });
-  return h('div', { class: 'page' },
-    header('Personen'),
-    partnerMissingCard(),
-    h('ul', { class: 'list card' }, sorted.map((p) => h('li', { class: 'row' },
-      avatar(p.name, p.color),
-      h('span', { class: 'row-main' },
-        h('span', { class: 'row-title', text: p.name }),
-        h('span', { class: 'row-sub', text: p.member_id === state.me.user_id ? 'Du' : p.member_id ? 'Partner' : 'Beschenkte Person' }))
-    ))),
-    h('p', { class: 'muted small', text: 'Kinder, Familie und Freunde legst du im nächsten Ausbauschritt an.' })
-  );
-}
-
-function viewBought() {
-  return h('div', { class: 'page' },
-    header('Gekauft'),
-    h('div', { class: 'empty' },
-      h('span', { class: 'empty-icon', 'aria-hidden': 'true' }, icon('bag', 28)),
-      h('p', { class: 'empty-title', text: 'Noch nichts gekauft' }),
-      h('p', { class: 'muted', text: 'Hier stehen später alle besorgten Geschenke – mit Summen je Person und Anlass.' }))
-  );
-}
-
-function viewWishes() {
-  return h('div', { class: 'page' },
-    header('Meine Wünsche'),
-    h('div', { class: 'card note note-rose' }, icon('heart', 20),
-      h('span', { text: 'Dein Partner sieht diese Liste. Ob er etwas davon besorgt, erfährst du nicht – das bleibt die Überraschung.' })),
-    h('div', { class: 'empty' },
-      h('p', { class: 'empty-title', text: 'Noch keine Wünsche' }),
-      h('p', { class: 'muted', text: 'Eigene Wünsche eintragen kommt im nächsten Ausbauschritt.' }))
-  );
-}
-
-// ---------------------------------------------------------------- Einstellungen
-
-function showSettings() {
-  const name = h('input', { id: 'set-name', class: 'input', type: 'text', maxlength: 40, value: state.me.display_name });
-  const saveName = h('button', { class: 'btn btn-secondary', type: 'button' }, 'Namen speichern');
-  saveName.addEventListener('click', async () => {
-    const v = name.value.trim();
-    if (!v) { toast('Bitte einen Namen eingeben.'); return; }
-    busy(saveName, true);
-    try {
-      await api.update('members', 'user_id=eq.' + encodeURIComponent(state.me.user_id), { display_name: v });
-      await api.update('persons', 'member_id=eq.' + encodeURIComponent(state.me.user_id), { name: v });
-      state.me.display_name = v;
-      await loadHousehold();
-      toast('Gespeichert.');
-    } catch (err) {
-      toast(errorText(err));
-    }
-    busy(saveName, false);
-  });
-
-  const renewOut = h('div');
-  const renew = h('button', { class: 'btn btn-secondary', type: 'button' }, 'Neuen Wiederherstellungscode erzeugen');
-  renew.addEventListener('click', async () => {
-    busy(renew, true);
-    try {
-      const code = await api.rpc('renew_recovery_code');
-      renewOut.replaceChildren(h('p', { class: 'muted small', text: 'Der alte Code ist ab sofort ungültig. Bitte diesen sichern:' }), codeBlock(code));
-      renew.remove();
-    } catch (err) {
-      toast(errorText(err));
-      busy(renew, false);
-    }
-  });
-
-  const lock = h('button', { class: 'btn btn-secondary', type: 'button' }, 'Geheimwort auf diesem Gerät sperren');
-  lock.addEventListener('click', async () => {
-    await vault.forgetKeys();
-    close();
-    render(spinnerView());
-    route();
-  });
-
-  const close = openSheet('Einstellungen', h('div', { class: 'stack' },
-    h('div', { class: 'field' }, h('label', { for: 'set-name', text: 'Dein Name' }), name), saveName,
-    h('hr', { class: 'sep' }),
-    h('h3', { class: 'sub-title', text: 'Wiederherstellung' }),
-    h('p', { class: 'muted small', text: 'Hast du deinen Code nicht mehr? Erzeuge einen neuen und speichere ihn sicher.' }),
-    renew, renewOut,
-    h('hr', { class: 'sep' }),
-    h('h3', { class: 'sub-title', text: 'Geheimwort' }),
-    h('p', { class: 'muted small', text: 'Auf diesem iPhone entsperrt. Sperren heißt: Beim nächsten Öffnen wird das Geheimwort abgefragt.' }),
-    lock,
-    h('p', { class: 'muted small center-text', text: 'Wish ' + CONFIG.appVersion + ' · ' + state.members.length + ' von 2 Mitgliedern' })
-  ));
-}
-
 // ---------------------------------------------------------------- Start
 
 if ('serviceWorker' in navigator) {
@@ -635,4 +338,5 @@ if ('serviceWorker' in navigator) {
   });
 }
 
+setRoute(route);
 route();

@@ -48,7 +48,15 @@ const ICONS = {
   check: ['M5 12l5 5 9-10'],
   key: ['M14 10l7-7M18 6l2 2M16 8l2 2', { circles: [[9, 15, 5]] }],
   close: ['M6 6l12 12M18 6L6 18'],
-  chevron: ['M9 5l7 7-7 7']
+  chevron: ['M9 5l7 7-7 7'],
+  back: ['M15 5l-7 7 7 7'],
+  plus: ['M12 5v14M5 12h14'],
+  link: ['M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1', 'M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1'],
+  external: ['M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5'],
+  clipboard: ['M7 6H5v15h14V6h-2', { rect: [7, 3, 10, 5, 1] }],
+  trash: ['M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3'],
+  edit: ['M4 20h4L19 9l-4-4L4 16z', 'M13 7l4 4'],
+  heartFill: ['M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z']
 };
 
 export function icon(name, size) {
@@ -127,19 +135,27 @@ export function openSheet(title, content) {
   return close;
 }
 
-export function avatar(name, color, size) {
-  const initial = (name || '?').trim().charAt(0).toUpperCase() || '?';
-  const palette = [
-    ['#F8E3E3', '#8C2F39'], ['#E4ECF7', '#2C4F80'], ['#E7E3F5', '#4B3C8C'],
-    ['#EFE6F3', '#6A3E80'], ['#E2EFE8', '#1F6F55'], ['#F6E7D8', '#8A4B14']
-  ];
+export const PALETTE = [
+  ['#F8E3E3', '#8C2F39'], ['#E4ECF7', '#2C4F80'], ['#E7E3F5', '#4B3C8C'],
+  ['#EFE6F3', '#6A3E80'], ['#E2EFE8', '#1F6F55'], ['#F6E7D8', '#8A4B14'],
+  ['#E3F0F1', '#1F5F66'], ['#F3EED2', '#6B5A0E']
+];
+
+export function colorFor(name, color) {
+  const hit = color && PALETTE.find(([bg]) => bg.toLowerCase() === String(color).toLowerCase());
+  if (hit) return hit;
   let hash = 0;
   for (const ch of name || '') hash = (hash * 31 + ch.codePointAt(0)) >>> 0;
-  const [bg, fg] = palette[hash % palette.length];
+  return PALETTE[hash % PALETTE.length];
+}
+
+export function avatar(name, color, size) {
+  const initial = (name || '?').trim().charAt(0).toUpperCase() || '?';
+  const [bg, fg] = colorFor(name, color);
   return h('span', {
-    class: 'avatar' + (size === 'l' ? ' avatar-l' : ''),
+    class: 'avatar' + (size === 'l' ? ' avatar-l' : size === 's' ? ' avatar-s' : ''),
     'aria-hidden': 'true',
-    style: { background: color || bg, color: fg }
+    style: { background: bg, color: fg }
   }, initial);
 }
 

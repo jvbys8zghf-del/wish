@@ -4,5 +4,5 @@
 export const CONFIG = Object.freeze({
   supabaseUrl: 'https://fptreysmjvmavdjirhnh.supabase.co',
   publishableKey: 'sb_publishable_1etJa2M1xd6AgWTp1ZI5GQ_i4SfcWiZ',
-  appVersion: '0.3.1'
+  appVersion: '0.4.0'
 });

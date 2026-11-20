@@ -155,6 +155,27 @@ export async function update(table, filter, values) {
   });
 }
 
+// POST /rest/v1/<table> – gibt die angelegte Zeile zurück
+export async function insert(table, values) {
+  const res = await authed(REST + '/' + table, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json', Prefer: 'return=representation' },
+    body: JSON.stringify(values)
+  });
+  const rows = await res.json();
+  return Array.isArray(rows) ? rows[0] : rows;
+}
+
+// DELETE /rest/v1/<table>?<filter> – gibt die Zahl gelöschter Zeilen zurück
+export async function remove(table, filter) {
+  const res = await authed(REST + '/' + table + '?' + filter, {
+    method: 'DELETE',
+    headers: { Accept: 'application/json', Prefer: 'return=representation' }
+  });
+  const rows = await res.json();
+  return Array.isArray(rows) ? rows.length : 0;
+}
+
 // POST /rest/v1/rpc/<fn>
 export async function rpc(fn, args) {
   const res = await authed(REST + '/rpc/' + fn, {
