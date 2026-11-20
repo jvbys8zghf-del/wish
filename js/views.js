@@ -65,6 +65,15 @@ function pill(text, kind) {
 
 function ideaMeta(i) {
   const parts = [];
+  if (i.coIds && i.coIds.length) {
+    const names = i.coIds.map((id) => data.personById(id)).filter(Boolean).map((p) => p.name);
+    if (names.length) parts.push('mit ' + names.join(', '));
+  }
+  if (i.status && i.paid_cents !== null && i.paid_cents !== undefined) {
+    parts.push(data.formatPrice(i.paid_cents) + ' bezahlt');
+    if (i.details) parts.push(i.details);
+    return parts.join(' · ');
+  }
   if (i.price_cents !== null && i.price_cents !== undefined) parts.push(data.formatPrice(i.price_cents));
   if (i.details) parts.push(i.details);
   if (i.shop) parts.push(i.shop);
@@ -145,6 +154,7 @@ function viewSoon() {
   return h('div', { class: 'page' },
     header('Bald', fmtToday.format(data.startOfToday())),
     partnerMissingCard(),
+    overdueCard(),
     h('h2', { class: 'section-title', text: 'Nächste Anlässe' }),
     h('ul', { class: 'cards' }, list.map((it) => {
       const secret = it.person && data.isPartner(it.person);
@@ -259,9 +269,27 @@ function confirmDeleteOccasion(o) {
   });
 }
 
+function historySection(ideas) {
+  const given = ideas.filter((i) => i.status === 'given')
+    .sort((a, b) => (b.statusYear || 0) - (a.statusYear || 0) || String(b.given_on).localeCompare(String(a.given_on)));
+  if (!given.length) return null;
+  return h('section', { class: 'stack-s' },
+    h('h2', { class: 'caps', text: 'Historie · verschenkt' }),
+    h('ul', { class: 'list card' }, given.map((i) => {
+      const person = data.personById(i.personId);
+      const occ = data.occasionLabel(i.statusOccasion, person);
+      return h('li', { class: 'row-wrap' }, h('button', { type: 'button', class: 'row row-btn', onclick: () => openIdeaSheet(i.id) },
+        h('span', { class: 'row-main' },
+          h('span', { class: 'row-title', text: i.title }),
+          h('span', { class: 'row-sub', text: [occ, i.statusYear].filter(Boolean).join(' ') + (i.paid_cents ? ' · ' + data.formatPrice(i.paid_cents) : '') })),
+        h('span', { class: 'chev' }, icon('chevron', 16))));
+    })));
+}
+
 function personPage(person) {
   if (data.isPartner(person)) return partnerPage(person);
-  const ideas = data.ideasFor(person.id);
+  const all = state.ideas.filter((i) => i.personId === person.id || (i.coIds || []).includes(person.id));
+  const ideas = all.filter((i) => i.status !== 'given');
   const edit = h('button', { class: 'link-btn', type: 'button', onclick: () => openPersonForm(person.id) }, 'Bearbeiten');
   return h('div', { class: 'page' },
     h('div', { class: 'page-top' }, backBar('Personen'), edit),
@@ -272,6 +300,7 @@ function personPage(person) {
       : h('div', { class: 'empty' },
         h('p', { class: 'empty-title', text: 'Noch keine Ideen für ' + person.name }),
         h('p', { class: 'muted', text: 'Tippe auf das Plus, sobald dir etwas einfällt.' })),
+    historySection(all),
     occasionsSection(person),
     fab('Idee für ' + person.name + ' hinzufügen', () => openIdeaForm({ personId: person.id }))
   );
@@ -279,8 +308,9 @@ function personPage(person) {
 
 function partnerPage(person) {
   const wishes = data.partnerWishes();
-  const secrets = data.mySecretsForPartner();
-  const taken = new Set(secrets.map((s) => s.fromWishId).filter(Boolean));
+  const allSecrets = data.mySecretsForPartner();
+  const secrets = allSecrets.filter((i) => i.status !== 'given');
+  const taken = new Set(allSecrets.map((s) => s.fromWishId).filter(Boolean));
   const edit = h('button', { class: 'link-btn', type: 'button', onclick: () => openPersonForm(person.id) }, 'Geburtstag');
 
   const wishRows = wishes.map((w) => {
@@ -310,6 +340,7 @@ function partnerPage(person) {
         h('h3', { class: 'caps small-caps', text: g.title + (g.date ? ' · ' + fmtDate.format(g.date) : '') }),
         h('ul', { class: 'list card' }, g.items.map((i) => ideaRow(i)))))
         : h('p', { class: 'muted small', text: 'Noch keine. Tippe auf das Plus oder übernimm einen Wunsch.' })),
+    historySection(allSecrets),
     occasionsSection(person),
     fab('Geheime Idee hinzufügen', () => openIdeaForm({ personId: person.id }), true)
   );
@@ -326,14 +357,107 @@ async function removeRetracted(w) {
 
 // ---------------------------------------------------------------- Gekauft
 
+const BOUGHT_MODES = [
+  { id: 'xmas', label: 'Weihnachten' },
+  { id: 'birthday', label: 'Geburtstage' },
+  { id: 'all', label: 'Alle' }
+];
+
+function overdueCard() {
+  const list = data.overdue();
+  if (!list.length) return null;
+  const btn = h('button', { class: 'btn btn-primary', type: 'button' }, 'Alle als verschenkt markieren');
+  btn.addEventListener('click', async () => {
+    busy(btn, true, 'Speichere …');
+    try {
+      for (const i of list) await data.setStatus(i, { status: 'given' });
+      toast(list.length + (list.length === 1 ? ' Geschenk' : ' Geschenke') + ' in der Historie.');
+      showMain(true);
+    } catch (err) { toast(errorText(err)); busy(btn, false); }
+  });
+  return h('div', { class: 'card note-plain stack' },
+    h('span', { class: 'caps', text: 'Anlass vorbei' }),
+    h('p', { text: list.length + (list.length === 1 ? ' gekauftes Geschenk wartet' : ' gekaufte Geschenke warten') + ' noch auf „verschenkt“. Einzelne kannst du in den Details ändern.' }),
+    btn);
+}
+
 function viewBought() {
+  const years = data.purchaseYears();
+  if (!state.boughtYear || !years.includes(state.boughtYear)) {
+    const cur = data.startOfToday().getFullYear();
+    state.boughtYear = years.includes(cur) ? cur : years[years.length - 1];
+  }
+  const mode = state.boughtMode || 'xmas';
+  const year = state.boughtYear;
+  const list = data.purchases(mode, year);
+  const spent = list.filter((i) => i.status !== 'reserved');
+  const total = spent.reduce((sum, i) => sum + (i.paid_cents || 0), 0);
+  const open = list.filter((i) => i.status !== 'given');
+  const given = list.filter((i) => i.status === 'given');
+
+  const seg = h('div', { class: 'segmented', role: 'tablist', 'aria-label': 'Anlass' },
+    BOUGHT_MODES.map((m) => h('button', {
+      type: 'button', role: 'tab', class: 'seg' + (m.id === mode ? ' seg-on' : ''), 'aria-selected': m.id === mode ? 'true' : 'false',
+      onclick: () => { state.boughtMode = m.id; showMain(true); }
+    }, m.label)));
+  const idx = years.indexOf(year);
+  const yearBar = h('div', { class: 'year-bar' },
+    h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Vorheriges Jahr', disabled: idx <= 0, onclick: () => { state.boughtYear = years[idx - 1]; showMain(true); } }, icon('back', 20)),
+    h('span', { class: 'year', text: String(year) }),
+    h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Nächstes Jahr', disabled: idx >= years.length - 1, onclick: () => { state.boughtYear = years[idx + 1]; showMain(true); } }, icon('chevron', 20)));
+
   return h('div', { class: 'page' },
     header('Gekauft'),
-    h('div', { class: 'empty' },
-      h('span', { class: 'empty-icon', 'aria-hidden': 'true' }, icon('bag', 28)),
-      h('p', { class: 'empty-title', text: 'Noch nichts gekauft' }),
-      h('p', { class: 'muted', text: 'Hier stehen später alle besorgten Geschenke – mit Summen je Person und Anlass.' }))
+    seg, yearBar,
+    overdueCard(),
+    mode !== 'all' ? kidsCard(mode, year) : null,
+    h('section', { class: 'stack-s' },
+      h('h2', { class: 'caps', text: 'Noch nicht verschenkt' }),
+      open.length ? h('ul', { class: 'list card' }, open.map(purchaseRow))
+        : h('p', { class: 'muted small', text: 'Nichts offen.' })),
+    given.length ? h('section', { class: 'stack-s' },
+      h('h2', { class: 'caps', text: 'Verschenkt' }),
+      h('ul', { class: 'list card' }, given.map(purchaseRow))) : null,
+    h('div', { class: 'card total' },
+      h('span', { class: 'muted', text: 'Summe ' + BOUGHT_MODES.find((m) => m.id === mode).label + ' ' + year }),
+      h('strong', { text: data.formatPrice(total) }))
   );
+}
+
+function purchaseRow(i) {
+  const person = data.personById(i.personId);
+  const buyer = state.members.find((m) => m.user_id === i.buyer);
+  const names = [person ? (data.isMe(person) ? 'Du' : person.name) : '?']
+    .concat((i.coIds || []).map((id) => data.personById(id)).filter(Boolean).map((p) => p.name));
+  const st = STATUS_LABEL[i.status];
+  return h('li', { class: 'row-wrap' }, h('button', { type: 'button', class: 'row row-btn', onclick: () => openIdeaSheet(i.id) },
+    person ? avatar(person.name, person.color, 's') : null,
+    h('span', { class: 'row-main' },
+      h('span', { class: 'row-title', text: i.title }),
+      h('span', { class: 'row-sub', text: names.join(' & ') + (i.status === 'reserved' ? ' · reserviert' : '') + (buyer ? ' · ' + (buyer.user_id === state.me.user_id ? 'von dir' : 'von ' + buyer.display_name) : '') + (i.secret ? ' · nur für dich sichtbar' : '') })),
+    h('span', { class: 'price' + (i.status === 'reserved' ? ' muted' : ''), text: i.paid_cents !== null && i.paid_cents !== undefined ? data.formatPrice(i.paid_cents) : '–' })));
+}
+
+function kidsCard(mode, year) {
+  const rows = data.kidsComparison(mode, year);
+  if (!rows.length) {
+    return h('div', { class: 'card note' }, icon('people', 20),
+      h('span', { text: 'Für den Vergleich bei einer Person „Unser Kind“ anhaken (Personen → Bearbeiten).' }));
+  }
+  const top = Math.max(...rows.map((r) => r.cents));
+  const min = Math.min(...rows.map((r) => r.cents));
+  const max = Math.max(1, top);
+  const fmtDay = new Intl.DateTimeFormat('de-DE', { day: 'numeric', month: 'short' });
+  return h('section', { class: 'card kids', 'aria-label': 'Kinder im Vergleich' },
+    h('div', { class: 'kids-head' },
+      h('h2', { class: 'sub-title', text: 'Kinder im Vergleich' }),
+      h('span', { class: 'muted small', text: 'Unterschied ' + data.formatPrice(top - min) })),
+    rows.map((r) => h('div', { class: 'kid' },
+      h('div', { class: 'kid-line' },
+        h('span', { class: 'kid-name', text: r.person.name + (mode === 'birthday' ? (r.bday ? ' · ' + fmtDay.format(r.bday) : ' · Geburtstag fehlt') : '') }),
+        h('span', { class: 'kid-val' }, r.count + (r.count === 1 ? ' Geschenk · ' : ' Geschenke · '), h('strong', { text: data.formatPrice(r.cents) }))),
+      h('span', { class: 'bar', 'aria-hidden': 'true' }, h('span', { class: 'bar-fill', style: { width: Math.round(r.cents / max * 100) + '%' } })))),
+    h('p', { class: 'muted small', text: 'Gezählt werden gekaufte und verschenkte Geschenke. Gemeinsame Geschenke werden anteilig verteilt.' }));
 }
 
 // ---------------------------------------------------------------- Meine Wünsche
@@ -367,7 +491,8 @@ function openIdeaSheet(id) {
   const canEdit = !i.retracted && !i.unreadable && (mine || (!data.isMe(person) && !data.isPartner(person)));
 
   const rows = [];
-  rows.push(['Für', data.isMe(person) ? 'Dich' : person.name]);
+  const coNames = (i.coIds || []).map((cid) => data.personById(cid)).filter(Boolean).map((p) => p.name);
+  rows.push(['Für', (data.isMe(person) ? 'Dich' : person.name) + (coNames.length ? ' & ' + coNames.join(' & ') : '')]);
   const occ = data.occasionLabel(i.occasion, person);
   if (occ) rows.push(['Anlass', occ]);
   if (i.price_cents !== null && i.price_cents !== undefined) rows.push(['Preis', data.formatPrice(i.price_cents)]);
@@ -376,12 +501,16 @@ function openIdeaSheet(id) {
     const buyer = state.members.find((m) => m.user_id === i.buyer);
     rows.push(['Status', STATUS_LABEL[i.status][0] + (buyer ? ' von ' + (buyer.user_id === state.me.user_id ? 'dir' : buyer.display_name) : '')
       + (i.paid_cents !== null && i.paid_cents !== undefined ? ' · ' + data.formatPrice(i.paid_cents) : '')]);
+    const so = data.occasionLabel(i.statusOccasion, person);
+    if (so || i.statusYear) rows.push(['Zählt für', [so, i.statusYear].filter(Boolean).join(' ')]);
   }
   const creator = state.members.find((m) => m.user_id === i.createdBy);
   rows.push(['Angelegt', (mine ? 'von dir' : 'von ' + (creator ? creator.display_name : 'Partner')) + ' · ' + fmtCreated.format(new Date(i.createdAt))]);
 
   const actions = h('div', { class: 'stack' });
   let close = null;
+  const canStatus = !i.unreadable && !i.retracted && !data.isMe(person) && (!data.isPartner(person) || mine);
+  const statusBox = canStatus ? statusActions(i, () => close) : null;
 
   if (isPartnerWish && !i.retracted) {
     const taken = data.mySecretsForPartner().some((s) => s.fromWishId === i.id);
@@ -411,9 +540,82 @@ function openIdeaSheet(id) {
     i.url ? h('a', { class: 'detail-link', href: i.url, target: '_blank', rel: 'noopener noreferrer' }, icon('external', 16), i.shop || 'Link öffnen') : null,
     h('dl', { class: 'facts card' }, rows.map(([k, v]) => h('div', { class: 'fact' }, h('dt', { text: k }), h('dd', { text: v })))),
     i.note ? h('div', { class: 'card note-plain' }, h('span', { class: 'caps', text: 'Notiz' }), h('p', { class: 'pre', text: i.note })) : null,
-    data.isPartner(person) && mine ? h('p', { class: 'muted small', text: 'Kaufen und Verschenken markierst du ab dem nächsten Ausbauschritt.' }) : null,
+    statusBox,
     actions);
   close = openSheet(isPartnerWish ? 'Wunsch' : isOwnWish ? 'Dein Wunsch' : 'Idee', body);
+}
+
+const STEPS = [['idea', 'Idee'], ['reserved', 'Reserviert'], ['bought', 'Gekauft'], ['given', 'Verschenkt']];
+
+function statusActions(i, getClose) {
+  const cur = i.status || 'idea';
+  const curIdx = STEPS.findIndex((x) => x[0] === cur);
+  const stepper = h('ol', { class: 'stepper', 'aria-label': 'Status' }, STEPS.map(([id, label], idx) =>
+    h('li', { class: 'step' + (idx < curIdx ? ' done' : idx === curIdx ? ' current' : ''), 'aria-current': idx === curIdx ? 'step' : null },
+      h('span', { class: 'dot', 'aria-hidden': 'true' }, idx < curIdx ? icon('check', 14) : String(idx + 1)), label)));
+
+  const run = async (btn, opts) => {
+    busy(btn, true, 'Speichere …');
+    try {
+      await data.setStatus(i, opts);
+      getClose()();
+      showMain(true);
+      openIdeaSheet(i.id);
+    } catch (err) { toast(errorText(err)); busy(btn, false); }
+  };
+  const btn = (label, cls, opts) => {
+    const b = h('button', { class: 'btn ' + cls, type: 'button' }, label);
+    b.addEventListener('click', () => run(b, opts));
+    return b;
+  };
+
+  const box = h('div', { class: 'card status-box stack' }, h('span', { class: 'caps', text: 'Status' }), stepper);
+  if (cur === 'idea') {
+    box.append(buyButton(i, getClose), btn('Reservieren', 'btn-secondary', { status: 'reserved' }));
+  } else if (cur === 'reserved') {
+    box.append(buyButton(i, getClose), btn('Reservierung aufheben', 'btn-plain', { status: null }));
+  } else if (cur === 'bought') {
+    box.append(btn('Als verschenkt markieren', 'btn-primary', { status: 'given' }), btn('Doch nicht gekauft', 'btn-plain', { status: null }));
+  } else {
+    box.append(btn('Doch nicht verschenkt', 'btn-plain', { status: 'bought' }));
+  }
+  return box;
+}
+
+function buyButton(i, getClose) {
+  const b = h('button', { class: 'btn btn-primary', type: 'button' }, 'Als gekauft markieren');
+  b.addEventListener('click', () => {
+    getClose()();
+    const person = data.personById(i.personId);
+    const price = h('input', { id: 'b-price', class: 'input', type: 'text', inputmode: 'decimal',
+      value: i.price_cents !== null && i.price_cents !== undefined ? (i.price_cents / 100).toFixed(2).replace('.', ',') : '' });
+    const occ = h('select', { id: 'b-occ', class: 'input' }, h('option', { value: '' }, 'Kein bestimmter Anlass'),
+      data.occasionOptions(person).map((o) => h('option', { value: o.value }, o.label + ' ' + o.date.getFullYear())));
+    occ.value = i.occasion && Array.from(occ.options).some((x) => x.value === i.occasion) ? i.occasion : '';
+    const err = h('p', { class: 'form-error', role: 'alert' });
+    const save = h('button', { class: 'btn btn-primary', type: 'submit' }, 'Gekauft');
+    const form = h('form', { class: 'stack', novalidate: true },
+      h('p', { class: 'muted', text: i.title }),
+      h('div', { class: 'field' }, h('label', { for: 'b-price', text: 'Bezahlt' }), price),
+      h('div', { class: 'field' }, h('label', { for: 'b-occ', text: 'Zählt für' }), occ),
+      err, save);
+    let closeBuy = null;
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const pc = data.parsePrice(price.value);
+      if (pc === undefined) { err.textContent = 'Bitte den Betrag als Zahl eingeben, z. B. 49,99.'; return; }
+      busy(save, true, 'Speichere …');
+      try {
+        const occasion = occ.value || null;
+        await data.setStatus(i, { status: 'bought', paid_cents: pc, occasion, year: data.yearForOccasion(occasion, person) });
+        closeBuy();
+        toast('Als gekauft markiert.');
+        showMain(true);
+      } catch (ex) { err.textContent = errorText(ex); busy(save, false); }
+    });
+    closeBuy = openSheet('Gekauft', form);
+  });
+  return b;
 }
 
 function confirmRetract(i, closeParent) {

@@ -18,36 +18,40 @@ const enc = encodeURIComponent;
 // ---------------------------------------------------------------- Laden
 
 export async function loadAll() {
-  const [members, persons, occasions, ideas, statuses] = await Promise.all([
+  const [members, persons, occasions, ideas, statuses, coRows] = await Promise.all([
     api.select('members', 'select=user_id,display_name,created_at&order=created_at.asc'),
     api.select('persons', 'select=id,name,emoji,color,birth_month,birth_day,birth_year,member_id,archived,is_child,created_at&order=name.asc'),
     api.select('occasions', 'select=id,person_id,title,kind,month,day,year,recurring&order=month.asc,day.asc'),
     api.select('ideas', 'select=*&order=created_at.desc'),
-    api.select('gift_status', 'select=idea_id,status,buyer,paid_cents,occasion_year')
+    api.select('gift_status', 'select=idea_id,status,buyer,paid_cents,bought_on,given_on,occasion_id,for_birthday,occasion_year'),
+    api.select('idea_co_recipients', 'select=idea_id,person_id')
   ]);
-  const statusById = new Map(statuses.map((s) => [s.idea_id, s]));
+  const statusById = new Map(statuses.map((x) => [x.idea_id, x]));
+  const coById = new Map();
+  for (const c of coRows) {
+    if (!coById.has(c.idea_id)) coById.set(c.idea_id, []);
+    coById.get(c.idea_id).push(c.person_id);
+  }
   state.members = members;
   state.me = members.find((m) => m.user_id === api.currentUserId()) || state.me;
   state.persons = persons.filter((p) => !p.archived);
   state.occasions = occasions;
-  state.ideas = await Promise.all(ideas.map(toView));
-  for (const i of state.ideas) {
-    const s = statusById.get(i.id);
-    i.status = s ? s.status : null;
-    i.paid_cents = s ? s.paid_cents : null;
-    i.buyer = s ? s.buyer : null;
-  }
+  state.ideas = await Promise.all(ideas.map((row) => toView(row, statusById.get(row.id), coById.get(row.id))));
 }
 
-async function toView(row) {
+const NO_STATUS = { status: null, buyer: null, paid_cents: null, bought_on: null, given_on: null, statusOccasion: null, statusYear: null };
+
+async function toView(row, st, co) {
   const base = {
     id: row.id,
     personId: row.person_id,
+    coIds: co || [],
     createdBy: row.created_by,
     createdAt: row.created_at,
     retracted: Boolean(row.retracted_at),
     secret: row.enc !== null && row.enc !== undefined,
-    unreadable: false
+    unreadable: false,
+    payload: null
   };
   if (!base.secret) {
     return Object.assign(base, {
@@ -59,11 +63,20 @@ async function toView(row) {
       details: row.details,
       occasion: row.for_birthday ? 'birthday' : row.occasion_id || null,
       fromWishId: null
-    });
+    }, st ? {
+      status: st.status,
+      buyer: st.buyer,
+      paid_cents: st.paid_cents,
+      bought_on: st.bought_on,
+      given_on: st.given_on,
+      statusOccasion: st.for_birthday ? 'birthday' : st.occasion_id || null,
+      statusYear: st.occasion_year
+    } : NO_STATUS);
   }
   try {
     const p = await vault.decryptJSON(state.key, row.enc);
     return Object.assign(base, {
+      payload: p,
       title: p.title,
       note: p.note || null,
       url: p.url || null,
@@ -72,12 +85,20 @@ async function toView(row) {
       details: p.details || null,
       occasion: p.occasion || null,
       fromWishId: p.from_wish_id || null
-    });
+    }, p.status ? {
+      status: p.status,
+      buyer: row.created_by,
+      paid_cents: Number.isInteger(p.paid_cents) ? p.paid_cents : null,
+      bought_on: p.bought_on || null,
+      given_on: p.given_on || null,
+      statusOccasion: p.status_occasion || null,
+      statusYear: p.status_year || null
+    } : NO_STATUS);
   } catch (e) {
     return Object.assign(base, {
       title: 'Nicht lesbar', note: null, url: null, shop: null, price_cents: null,
       details: null, occasion: null, fromWishId: null, unreadable: true
-    });
+    }, NO_STATUS);
   }
 }
 
@@ -350,7 +371,13 @@ export async function saveIdea(values, existingId) {
   let row;
   if (isPartner(person)) {
     if (!state.key) throw new Error('Geheimwort nicht entsperrt.');
-    const payload = Object.assign({}, fields, {
+    const old = existingId ? state.ideas.find((i) => i.id === existingId) : null;
+    const keep = old && old.payload ? {
+      status: old.payload.status || null, paid_cents: old.payload.paid_cents ?? null,
+      bought_on: old.payload.bought_on || null, given_on: old.payload.given_on || null,
+      status_occasion: old.payload.status_occasion || null, status_year: old.payload.status_year || null
+    } : {};
+    const payload = Object.assign({}, fields, keep, {
       occasion: values.occasion || null,
       from_wish_id: values.fromWishId || null,
       v: 1
@@ -368,9 +395,159 @@ export async function saveIdea(values, existingId) {
     row = existingId
       ? await api.update('ideas', 'id=eq.' + enc(existingId), plain)
       : await api.insert('ideas', Object.assign({ person_id: person.id }, plain));
+    const ideaId = existingId || (row && row.id);
+    if (ideaId && Array.isArray(values.coIds)) await syncCoRecipients(ideaId, values.coIds);
   }
   await loadAll();
   return row;
+}
+
+async function syncCoRecipients(ideaId, wanted) {
+  const current = (state.ideas.find((i) => i.id === ideaId) || { coIds: [] }).coIds;
+  const add = wanted.filter((id) => !current.includes(id));
+  const del = current.filter((id) => !wanted.includes(id));
+  for (const pid of add) await api.insert('idea_co_recipients', { idea_id: ideaId, person_id: pid });
+  for (const pid of del) await api.remove('idea_co_recipients', 'idea_id=eq.' + enc(ideaId) + '&person_id=eq.' + enc(pid));
+}
+
+// ---------------------------------------------------------------- Status
+
+function isoToday() {
+  const d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
+// Jahr, zu dem ein Kauf zählt: nächstes Vorkommen des Anlasses, sonst laufendes Jahr
+export function yearForOccasion(occasion, person) {
+  const today = startOfToday();
+  if (occasion === 'birthday' && person) {
+    const d = birthdayDate(person, today);
+    return d ? d.getFullYear() : today.getFullYear();
+  }
+  const o = state.occasions.find((x) => x.id === occasion);
+  const d = o ? occasionDate(o, today) : null;
+  return d ? d.getFullYear() : today.getFullYear();
+}
+
+// opts: { status: null|'reserved'|'bought'|'given', paid_cents, occasion, year }
+export async function setStatus(idea, opts) {
+  const person = personById(idea.personId);
+  const status = opts.status;
+  const occasion = opts.occasion !== undefined ? opts.occasion : (idea.statusOccasion || idea.occasion || null);
+  const year = opts.year || idea.statusYear || yearForOccasion(occasion, person);
+  const paid = opts.paid_cents !== undefined ? opts.paid_cents
+    : (idea.paid_cents !== null && idea.paid_cents !== undefined ? idea.paid_cents : idea.price_cents);
+  const boughtOn = status === 'bought' || status === 'given' ? (idea.bought_on || isoToday()) : null;
+  const givenOn = status === 'given' ? (idea.given_on || isoToday()) : null;
+
+  if (idea.secret) {
+    if (!state.key) throw new Error('Geheimwort nicht entsperrt.');
+    const payload = Object.assign({}, idea.payload, status ? {
+      status, paid_cents: paid ?? null, bought_on: boughtOn, given_on: givenOn,
+      status_occasion: occasion, status_year: year
+    } : { status: null, paid_cents: null, bought_on: null, given_on: null, status_occasion: null, status_year: null });
+    await api.update('ideas', 'id=eq.' + enc(idea.id), { enc: await vault.encryptJSON(state.key, payload) });
+  } else if (!status) {
+    await api.remove('gift_status', 'idea_id=eq.' + enc(idea.id));
+  } else {
+    const values = {
+      status,
+      paid_cents: paid ?? null,
+      bought_on: boughtOn,
+      given_on: givenOn,
+      occasion_id: occasion && occasion !== 'birthday' ? occasion : null,
+      for_birthday: occasion === 'birthday',
+      occasion_year: year
+    };
+    if (idea.status) await api.update('gift_status', 'idea_id=eq.' + enc(idea.id), values);
+    else await api.insert('gift_status', Object.assign({ idea_id: idea.id }, values));
+  }
+  await loadAll();
+}
+
+// ---------------------------------------------------------------- Auswertung
+
+export function recipientsOf(idea) {
+  return [idea.personId].concat(idea.coIds || []);
+}
+
+function occasionDayIn(occasion, person, year) {
+  if (occasion === 'birthday') {
+    return person && person.birth_month ? dateIn(year, person.birth_month, person.birth_day) : null;
+  }
+  const o = state.occasions.find((x) => x.id === occasion);
+  if (!o) return null;
+  if (o.kind === 'easter') return easterSunday(year);
+  return dateIn(year, o.month, o.day);
+}
+
+// Gekaufte, aber noch nicht verschenkte Geschenke, deren Anlass vorbei ist
+export function overdue() {
+  const today = startOfToday();
+  return state.ideas.filter((i) => {
+    if (i.status !== 'bought' || !i.statusOccasion || !i.statusYear) return false;
+    const d = occasionDayIn(i.statusOccasion, personById(i.personId), i.statusYear);
+    return d && d < today;
+  });
+}
+
+export function xmasId() {
+  const o = state.occasions.find((x) => !x.person_id && x.title === 'Weihnachten');
+  return o ? o.id : null;
+}
+
+// mode: 'xmas' | 'birthday' | 'all'
+export function purchases(mode, year) {
+  const x = xmasId();
+  return state.ideas.filter((i) => {
+    if (i.status !== 'bought' && i.status !== 'given' && i.status !== 'reserved') return false;
+    if (i.statusYear !== year) return false;
+    if (mode === 'xmas') return i.statusOccasion === x;
+    if (mode === 'birthday') return i.statusOccasion === 'birthday';
+    return true;
+  });
+}
+
+export function purchaseYears() {
+  const ys = new Set(state.ideas.filter((i) => i.statusYear).map((i) => i.statusYear));
+  ys.add(startOfToday().getFullYear());
+  return Array.from(ys).sort((a, b) => a - b);
+}
+
+// Vergleich der Kinder: gezählt wird Gekauftes und Verschenktes, gemeinsame Geschenke anteilig
+export function kidsComparison(mode, year) {
+  const kids = state.persons.filter((p) => p.is_child).sort((a, b) => a.name.localeCompare(b.name, 'de'));
+  const list = purchases(mode, year).filter((i) => i.status !== 'reserved');
+  return kids.map((k) => {
+    let count = 0;
+    let cents = 0;
+    for (const i of list) {
+      const rec = recipientsOf(i);
+      if (!rec.includes(k.id)) continue;
+      count += 1;
+      cents += Math.round((i.paid_cents || 0) / rec.length);
+    }
+    const bday = mode === 'birthday' && k.birth_month ? dateIn(year, k.birth_month, k.birth_day) : null;
+    return { person: k, count, cents, bday };
+  });
+}
+
+// Ähnliche frühere Geschenke für dieselbe Person
+function norm(t) {
+  return String(t || '').toLowerCase().replace(/[^a-z0-9äöüß ]/g, ' ').split(/\s+/).filter((w) => w.length > 2);
+}
+
+export function similarGifts(personId, title, url, excludeId) {
+  const words = norm(title);
+  return state.ideas.filter((i) => {
+    if (i.id === excludeId || i.personId !== personId) return false;
+    if (i.status !== 'given' && i.status !== 'bought') return false;
+    if (url && i.url && i.url === url) return true;
+    const other = norm(i.title);
+    if (!words.length || !other.length) return false;
+    const shared = words.filter((w) => other.some((o) => o.startsWith(w) || w.startsWith(o))).length;
+    return shared / Math.min(words.length, other.length) >= 0.6;
+  });
 }
 
 export async function deleteIdea(id) {

@@ -32,6 +32,8 @@ export function openIdeaForm(opts) {
   const existing = o.ideaId ? state.ideas.find((i) => i.id === o.ideaId) : null;
   const src = existing || o.fromWish || null;
   let personId = existing ? existing.personId : o.fromWish ? data.partnerPerson().id : o.personId || null;
+  let coIds = existing ? existing.coIds.slice() : [];
+  let dupConfirmed = false;
 
   const title = h('input', { id: 'f-title', class: 'input input-l', type: 'text', maxlength: 200, autocomplete: 'off', value: src ? src.title : '' });
   const url = h('input', { id: 'f-url', class: 'input', type: 'url', inputmode: 'url', autocomplete: 'off', autocapitalize: 'off', placeholder: 'https://…', value: src && src.url ? src.url : '' });
@@ -61,6 +63,25 @@ export function openIdeaForm(opts) {
       data.isPartner(person) ? secretHint : data.isMe(person) ? wishHint : '');
   }
 
+  // Gemeinsames Geschenk für mehrere Personen ohne Login
+  const coChips = h('div', { class: 'chips', role: 'group', 'aria-label': 'Gemeinsam mit' });
+  const coField = h('div', { class: 'field' }, h('span', { class: 'field-label', text: 'Gemeinsam mit (optional)' }), coChips);
+  function renderCo() {
+    const main = data.personById(personId);
+    if (!main || main.member_id) { coField.hidden = true; coIds = []; return; }
+    coField.hidden = false;
+    coIds = coIds.filter((id) => id !== personId);
+    const others = state.persons.filter((p) => !p.member_id && p.id !== personId)
+      .sort((a, b) => (b.is_child - a.is_child) || a.name.localeCompare(b.name, 'de'));
+    coChips.replaceChildren(...others.map((p) => {
+      const on = coIds.includes(p.id);
+      return h('button', {
+        type: 'button', class: 'chip chip-s' + (on ? ' chip-on' : ''), 'aria-pressed': on ? 'true' : 'false',
+        onclick: () => { coIds = on ? coIds.filter((x) => x !== p.id) : coIds.concat(p.id); renderCo(); }
+      }, p.name);
+    }));
+  }
+
   // Personenwahl
   const chips = h('div', { class: 'chips', role: 'group', 'aria-label': 'Für wen?' });
   function renderChips() {
@@ -74,7 +95,7 @@ export function openIdeaForm(opts) {
       const label = data.isMe(p) ? 'Ich' : p.name;
       return h('button', {
         type: 'button', class: 'chip' + (selected ? ' chip-on' : ''), 'aria-pressed': selected ? 'true' : 'false',
-        onclick: () => { personId = p.id; renderChips(); fillOccasions(); }
+        onclick: () => { personId = p.id; renderChips(); fillOccasions(); renderCo(); }
       }, avatar(p.name, p.color, 's'), label, data.isPartner(p) ? icon('lock', 14) : null);
     }));
   }
@@ -101,6 +122,7 @@ export function openIdeaForm(opts) {
     !existing ? h('div', { class: 'field' }, h('span', { class: 'field-label', text: 'Für wen?' }), chips)
       : h('p', { class: 'muted small', text: 'Für ' + (data.isMe(data.personById(personId)) ? 'dich' : data.personById(personId).name) }),
     hintSlot,
+    coField,
     field('f-occasion', 'Anlass', occasion),
     paste,
     field('f-url', 'Link', url),
@@ -122,11 +144,24 @@ export function openIdeaForm(opts) {
     if (u === undefined) { error.textContent = 'Der Link sieht nicht gültig aus.'; url.focus(); return; }
     const pc = data.parsePrice(price.value);
     if (pc === undefined) { error.textContent = 'Bitte den Preis als Zahl eingeben, z. B. 49,99.'; price.focus(); return; }
+    if (!dupConfirmed) {
+      const similar = data.similarGifts(personId, t, u, existing ? existing.id : null);
+      if (similar.length) {
+        const s0 = similar[0];
+        const when = s0.status === 'given' ? 'schon verschenkt' : 'schon gekauft';
+        const occ = data.occasionLabel(s0.statusOccasion, data.personById(personId));
+        error.textContent = 'Ähnliches ' + when + ': „' + s0.title + '“' + (occ ? ' (' + occ + (s0.statusYear ? ' ' + s0.statusYear : '') + ')' : '') + '. Trotzdem sichern?';
+        dupConfirmed = true;
+        save.textContent = 'Trotzdem sichern';
+        return;
+      }
+    }
     busy(save, true, 'Speichere …');
     try {
       await data.saveIdea({
         personId, title: t, note: note.value.trim(), url: u, price_cents: pc,
         details: details.value.trim(), occasion: occasion.value || null,
+        coIds: data.isPartner(data.personById(personId)) || data.isMe(data.personById(personId)) ? undefined : coIds,
         fromWishId: existing ? existing.fromWishId : o.fromWish ? o.fromWish.id : null
       }, existing ? existing.id : null);
       close();
@@ -140,6 +175,7 @@ export function openIdeaForm(opts) {
 
   if (!existing) renderChips();
   fillOccasions();
+  renderCo();
   close = openSheet(existing ? 'Idee bearbeiten' : o.fromWish ? 'Wunsch übernehmen' : 'Neue Idee', form);
   if (!existing && !o.fromWish) setTimeout(() => title.focus(), 250);
 }
